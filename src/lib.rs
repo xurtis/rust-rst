@@ -4,6 +4,8 @@
 //!
 //! [specification]: http://docutils.sourceforge.net/docs/ref/rst/restructuredtext.html
 
+extern crate url;
+
 pub mod ast;
 pub mod tokens;
 pub mod location;

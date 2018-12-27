@@ -173,7 +173,7 @@ impl Locator for SourceLocation {
 
     fn span_to(&self, end: &Location) -> Self::Span {
         SourceSpan {
-            source: self.source,
+            source: self.source.clone(),
             span: self.location.span_to(end),
         }
     }
@@ -202,7 +202,7 @@ impl Locator for SourceSpan {
 
     fn span_to(&self, end: &Location) -> Self::Span {
         SourceSpan {
-            source: self.source,
+            source: self.source.clone(),
             span: self.span.span_to(end),
         }
     }
