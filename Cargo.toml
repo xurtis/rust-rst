@@ -2,7 +2,9 @@
 name = "rust-rst"
 version = "0.1.0"
 authors = ["Curtis Millar <curtis@curtism.me>"]
+edition = "2018"
 
 [dependencies]
 url = "1.7.2"
 fast_chemail = "0.9.5"
+error-chain = "0.12.0"
