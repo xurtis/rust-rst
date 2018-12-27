@@ -5,6 +5,8 @@
 //! [specification]: http://docutils.sourceforge.net/docs/ref/rst/restructuredtext.html
 
 pub mod ast;
+pub mod tokens;
+pub mod location;
 
 #[cfg(test)]
 mod tests {
