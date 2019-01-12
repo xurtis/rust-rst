@@ -6,9 +6,12 @@
 
 extern crate url;
 
+pub mod error;
 pub mod ast;
-pub mod tokens;
+mod tokens;
 pub mod location;
+
+pub use self::tokens::{Token, TokenStream};
 
 #[cfg(test)]
 mod tests {
