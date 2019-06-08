@@ -2,33 +2,34 @@
 //!
 //! This takes a read stream and produces an iterator over the tokens from that stream.
 
-use std::io::{BufReader, Read, BufRead};
+use crate::location::{Locator, Source, SourceLocation, SourceSpan, SpanLocator};
 
-use failure::Error;
+use failure::{format_err, Error};
 
-pub struct TokenStream<R> {
-    buffer: Option<Token>,
-    chars: Chars<R>,
+pub struct TokenStream<'s, S: Source> {
+    buffer: Option<(Token, SourceSpan<'s, S>)>,
+    chars: Chars<'s, S>,
 }
 
-impl<R: Read> TokenStream<R> {
-    pub fn from_reader(reader: R) -> TokenStream<R> {
-        TokenStream {
+impl<'s, S: Source + 's> TokenStream<'s, S> {
+    pub fn try_new(source: &'s mut S) -> Result<TokenStream<'s, S>, Error> {
+        let stream = TokenStream {
             buffer: None,
-            chars: Chars::from_reader(reader),
-        }
+            chars: Chars::try_from_source(source)?,
+        };
+
+        Ok(stream)
     }
 }
 
-impl<R: Read> Iterator for TokenStream<R> {
-    type Item = Result<Token, Error>;
+impl<'s, S: Source> Iterator for TokenStream<'s, S> {
+    type Item = Result<(Token, SourceSpan<'s, S>), Error>;
 
     fn next(&mut self) -> Option<Self::Item> {
         loop {
-            let (buffer, c) = match (self.buffer.take(), self.chars.next()) {
-                (buffer, Some(Ok(c))) => (buffer, c),
-                (buffer, Some(Err(error))) => {
-                    self.buffer = buffer;
+            let (buffer, c, location) = match (self.buffer.take(), self.chars.next()) {
+                (buffer, Some(Ok((c, loc)))) => (buffer, c, loc),
+                (_, Some(Err(error))) => {
                     return Some(Err(error.into()));
                 }
                 (buffer, None) => {
@@ -36,86 +37,67 @@ impl<R: Read> Iterator for TokenStream<R> {
                 }
             };
 
+            let next_location = location.location_after(c);
+            let char_span = location.span_to(next_location.location());
+
             match (buffer, Token::parse_char(c)) {
-                (Some(Token::Word(mut s)), None) => {
+                (Some((Token::Word(mut s), span)), None) => {
                     s.push(c);
-                    self.buffer = Some(Token::Word(s));
+                    self.buffer = Some((Token::Word(s), span.extended_span(c)));
                 }
-                (Some(s), None) => {
+                (Some(t), None) => {
                     let mut word = String::new();
                     word.push(c);
-                    self.buffer = Some(Token::Word(word));
+                    self.buffer = Some((Token::Word(word), char_span));
+                    break Some(Ok(t));
+                }
+                (Some(s), Some(token)) => {
+                    self.buffer = Some((token, char_span));
                     break Some(Ok(s));
                 }
-                (Some(s), token @ Some(_)) => {
-                    self.buffer = token;
-                    break Some(Ok(s));
-                }
-                (None, token @ Some(_)) => {
-                    break token.map(Ok);
+                (None, Some(token)) => {
+                    break Some(Ok((token, char_span)));
                 }
                 (None, None) => {
                     let mut word = String::new();
                     word.push(c);
-                    self.buffer = Some(Token::Word(word));
+                    self.buffer = Some((Token::Word(word), char_span));
                 }
             }
         }
     }
 }
 
-struct Chars<R> {
-    next: usize,
-    buffer: Vec<char>,
-    source: BufReader<R>,
+/// A stream of characters.
+pub struct Chars<'s, S: Source> {
+    chars: S::Chars,
+    location: SourceLocation<'s, S>,
 }
 
-impl<R: Read> Chars<R> {
-    fn from_reader(reader: R) -> Chars<R> {
-        Chars {
-            next: 0,
-            buffer: Vec::new(),
-            source: BufReader::new(reader),
-        }
+impl<'s, S: Source> Chars<'s, S> {
+    /// Open the standard input.
+    fn try_from_source(source: &'s mut S) -> Result<Self, Error> {
+        let chars = source
+            .chars()
+            .ok_or(format_err!("Couldn't read chars from {}", source.name()))?;
+
+        let location = SourceLocation::source_start(source);
+
+        Ok(Chars { chars, location })
     }
 }
 
-impl<R: Read> Chars<R> {
-    fn next_char(&mut self) -> Option<char> {
-        if self.next < self.buffer.len() {
-            let next = self.buffer[self.next];
-            self.next += 1;
-            Some(next)
-        } else {
-            None
-        }
-    }
-
-    fn refill_buffer(&mut self) -> Result<(), Error> {
-        let mut line = String::new();
-        match self.source.read_line(&mut line) {
-            Ok(_) => {
-                self.buffer = line.chars().collect();
-                self.next = 0;
-                Ok(())
-            }
-            Err(err) => Err(err.into()),
-        }
-    }
-}
-
-impl<R: Read> Iterator for Chars<R> {
-    type Item = Result<char, Error>;
+impl<'s, S: Source> Iterator for Chars<'s, S> {
+    type Item = Result<(char, SourceLocation<'s, S>), Error>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        if let Some(c) = self.next_char() {
-            Some(Ok(c))
-        } else {
-            if let Err(err) = self.refill_buffer() {
-                Some(Err(err.into()))
-            } else {
-                self.next_char().map(Ok)
+        let location = self.location.clone();
+        match self.chars.next()? {
+            Ok(c) => {
+                self.location = location.location_after(c);
+                Some(Ok((c, location)))
             }
+            Err(err) => Some(Err(err)),
         }
     }
 }
@@ -161,38 +143,38 @@ pub enum Token {
 
     // Bullets
     Bullet,
-    TriangularBullet,
     HyphenBullet,
+    TriangularBullet,
 
     // Any of the following punctuation can be used for adornment.
 
     // Punctuation
-    Exclamation,
-    DoubleQuote,
-    SingleQuote,
-    Hash,
-    Dollar,
-    Percent,
     Ampersand,
     Asterisk,
-    Plus,
-    Comma,
-    Hyphen,
-    Period,
-    ForwardSlash,
-    Colon,
-    SemiColon,
-    LessThan,
-    Equal,
-    GreaterThan,
-    Question,
     At,
     BackSlash,
-    Caret,
-    Underscore,
     Backtick,
+    Caret,
+    Colon,
+    Comma,
+    Dollar,
+    DoubleQuote,
+    Equal,
+    Exclamation,
+    ForwardSlash,
+    GreaterThan,
+    Hash,
+    Hyphen,
+    LessThan,
+    Percent,
+    Period,
     Pipe,
+    Plus,
+    Question,
+    SemiColon,
+    SingleQuote,
     Tilde,
+    Underscore,
 
     // Parentheses
     OpenParen,
@@ -208,48 +190,48 @@ pub enum Token {
     // punctuation.
     Word(String),
 }
-use self::Token::*;
+use Token::*;
 
 impl Token {
     fn parse_char(c: char) -> Option<Token> {
         let c = match c {
             '\n' => Newline,
             c if c.is_whitespace() => Whitespace(c),
-            '•'  => Bullet,
-            '‣'  => TriangularBullet,
-            '⁃'  => HyphenBullet,
-            '!'  => Exclamation,
-            '"'  => DoubleQuote,
+            '•' => Bullet,
+            '‣' => TriangularBullet,
+            '⁃' => HyphenBullet,
+            '!' => Exclamation,
+            '"' => DoubleQuote,
             '\'' => SingleQuote,
-            '#'  => Hash,
-            '$'  => Dollar,
-            '%'  => Percent,
-            '&'  => Ampersand,
-            '*'  => Asterisk,
-            '+'  => Plus,
-            ','  => Comma,
-            '-'  => Hyphen,
-            '.'  => Period,
-            '/'  => ForwardSlash,
-            ':'  => Colon,
-            ';'  => SemiColon,
-            '<'  => LessThan,
-            '='  => Equal,
-            '>'  => GreaterThan,
-            '?'  => Question,
-            '@'  => At,
+            '#' => Hash,
+            '$' => Dollar,
+            '%' => Percent,
+            '&' => Ampersand,
+            '*' => Asterisk,
+            '+' => Plus,
+            ',' => Comma,
+            '-' => Hyphen,
+            '.' => Period,
+            '/' => ForwardSlash,
+            ':' => Colon,
+            ';' => SemiColon,
+            '<' => LessThan,
+            '=' => Equal,
+            '>' => GreaterThan,
+            '?' => Question,
+            '@' => At,
             '\\' => BackSlash,
-            '^'  => Caret,
-            '_'  => Underscore,
-            '`'  => Backtick,
-            '|'  => Pipe,
-            '~'  => Tilde,
-            '('  => OpenParen,
-            ')'  => CloseParen,
-            '['  => OpenBracket,
-            ']'  => CloseBracket,
-            '{'  => OpenBrace,
-            '}'  => CloseBrace,
+            '^' => Caret,
+            '_' => Underscore,
+            '`' => Backtick,
+            '|' => Pipe,
+            '~' => Tilde,
+            '(' => OpenParen,
+            ')' => CloseParen,
+            '[' => OpenBracket,
+            ']' => CloseBracket,
+            '{' => OpenBrace,
+            '}' => CloseBrace,
             _ => return None,
         };
 
@@ -268,38 +250,35 @@ impl Token {
     /// The token could be an adornment.
     pub fn is_adornment(&self) -> bool {
         match self {
-            Exclamation => true,
-            DoubleQuote => true,
-            Hash => true,
-            Dollar => true,
-            Percent => true,
             Ampersand => true,
-            SingleQuote => true,
-            OpenParen => true,
-            CloseParen => true,
             Asterisk => true,
-            Plus => true,
-            Comma => true,
-            Hyphen => true,
-            Period => true,
-            ForwardSlash => true,
-            Colon => true,
-            SemiColon => true,
-            LessThan => true,
-            Equal => true,
-            GreaterThan => true,
-            Question => true,
-            Ampersand => true,
-            OpenBracket => true,
             BackSlash => true,
-            CloseBracket => true,
-            Caret => true,
-            Underscore => true,
             Backtick => true,
-            OpenBracket => true,
-            Pipe => true,
+            Caret => true,
             CloseBracket => true,
+            CloseParen => true,
+            Colon => true,
+            Comma => true,
+            Dollar => true,
+            DoubleQuote => true,
+            Equal => true,
+            Exclamation => true,
+            ForwardSlash => true,
+            GreaterThan => true,
+            Hash => true,
+            Hyphen => true,
+            LessThan => true,
+            OpenBracket => true,
+            OpenParen => true,
+            Percent => true,
+            Period => true,
+            Pipe => true,
+            Plus => true,
+            Question => true,
+            SemiColon => true,
+            SingleQuote => true,
             Tilde => true,
+            Underscore => true,
             _ => false,
         }
     }
@@ -369,19 +348,19 @@ impl Token {
 
     const ROMAN_NUMERALS: &'static [(&'static str, usize, u64)] = &[
         ("MMMM", 2, 4000),
-        ("M",    0, 1000),
-        ("CM",   4, 900),
-        ("D",    1, 500),
-        ("CD",   2, 400),
-        ("C",    0, 100),
-        ("XC",   4, 90),
-        ("L",    1, 50),
-        ("XL",   2, 40),
-        ("X",    0, 10),
-        ("IX",   4, 9),
-        ("V",    1, 5),
-        ("IV",   2, 4),
-        ("I",    0, 1),
+        ("M", 0, 1000),
+        ("CM", 4, 900),
+        ("D", 1, 500),
+        ("CD", 2, 400),
+        ("C", 0, 100),
+        ("XC", 4, 90),
+        ("L", 1, 50),
+        ("XL", 2, 40),
+        ("X", 0, 10),
+        ("IX", 4, 9),
+        ("V", 1, 5),
+        ("IV", 2, 4),
+        ("I", 0, 1),
     ];
 
     /// Is a roman numeral.
@@ -399,9 +378,10 @@ impl Token {
             let mut last = vec![];
 
             while word.len() > 0 {
-                let (index, (numeral, skip, value)) = roman_numerals.iter()
+                let (index, (numeral, skip, value)) = roman_numerals
+                    .iter()
                     .enumerate()
-                    .find(|(i, (n, _, _))| word.starts_with(n))?;
+                    .find(|(_, (n, _, _))| word.starts_with(n))?;
 
                 if last.len() > 0 && last[0] == numeral {
                     if *skip == 0 {

@@ -2,25 +2,154 @@
 //!
 //! This contains all metadata attributable to the entire parse chain.
 
-use std::rc::Rc;
-use std::path::PathBuf;
+use std::borrow::Cow;
+use std::fmt;
+use std::io::{BufRead, BufReader, Read};
+use std::str;
 
-/// A source file being read.
-#[derive(Clone)]
-enum Source {
-    /// Reading from standard input.
-    Stdin,
-    /// Reading from a text buffer.
-    TextBuffer(Rc<String>),
-    /// A particular source file.
-    Source(Rc<PathBuf>),
+use failure::Error;
+
+/// A character source.
+pub trait Source {
+    /// The iterator over characters in the source.
+    type Chars: Iterator<Item = Result<char, Error>>;
+
+    /// Get the name of the source.
+    ///
+    /// This is displayed when showing errors in the source.
+    fn name(&self) -> Cow<str>;
+
+    /// Get an excerpt from the source.
+    fn excerpt(&self, span: Span) -> Cow<str>;
+
+    /// Get an iterator over the characters in the source.
+    fn chars(&mut self) -> Option<Self::Chars>;
 }
 
-impl Source {
-    fn start(&self) -> impl Locator {
-        SourceLocation {
-            source: self.clone(),
-            location: Default::default(),
+#[derive(Debug)]
+pub struct TextSource<'t> {
+    name: String,
+    buffer: &'t str,
+}
+
+impl<'t> TextSource<'t> {
+    pub fn from_str(name: &str, text: &'t str) -> Self {
+        TextSource {
+            name: name.to_owned(),
+            buffer: text,
+        }
+    }
+}
+
+impl<'t> Source for TextSource<'t> {
+    type Chars = TextChars<'t>;
+
+    fn name(&self) -> Cow<str> {
+        Cow::Borrowed(&self.name)
+    }
+
+    fn excerpt(&self, span: Span) -> Cow<str> {
+        unimplemented!()
+    }
+
+    fn chars(&mut self) -> Option<Self::Chars> {
+        Some(TextChars(self.buffer.chars()))
+    }
+}
+
+pub struct TextChars<'t>(str::Chars<'t>);
+
+impl<'t> Iterator for TextChars<'t> {
+    type Item = Result<char, Error>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.0.next().map(Ok)
+    }
+}
+
+#[derive(Debug)]
+pub struct ReaderSource<R> {
+    name: String,
+    reader: Option<R>,
+}
+
+impl<R: Read> ReaderSource<R> {
+    pub fn from_reader(name: &str, reader: R) -> Self {
+        ReaderSource {
+            name: name.to_owned(),
+            reader: Some(reader),
+        }
+    }
+}
+
+impl<R: Read> Source for ReaderSource<R> {
+    type Chars = ReaderChars<R>;
+
+    fn name(&self) -> Cow<str> {
+        Cow::Borrowed(&self.name)
+    }
+
+    fn excerpt(&self, span: Span) -> Cow<str> {
+        unimplemented!()
+    }
+
+    fn chars(&mut self) -> Option<Self::Chars> {
+        self.reader.take().map(ReaderChars::from_reader)
+    }
+}
+
+pub struct ReaderChars<R> {
+    next: usize,
+    buffer: Vec<char>,
+    source: BufReader<R>,
+}
+
+impl<R: Read> ReaderChars<R> {
+    fn from_reader(reader: R) -> ReaderChars<R> {
+        ReaderChars {
+            next: 0,
+            buffer: Vec::new(),
+            source: BufReader::new(reader),
+        }
+    }
+}
+
+impl<R: Read> ReaderChars<R> {
+    fn next_char(&mut self) -> Option<char> {
+        if self.next < self.buffer.len() {
+            let next = self.buffer[self.next];
+            self.next += 1;
+            Some(next)
+        } else {
+            None
+        }
+    }
+
+    fn refill_buffer(&mut self) -> Result<(), Error> {
+        let mut line = String::new();
+        match self.source.read_line(&mut line) {
+            Ok(_) => {
+                self.buffer = line.chars().collect();
+                self.next = 0;
+                Ok(())
+            }
+            Err(err) => Err(err.into()),
+        }
+    }
+}
+
+impl<R: Read> Iterator for ReaderChars<R> {
+    type Item = Result<char, Error>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if let Some(c) = self.next_char() {
+            Some(Ok(c))
+        } else {
+            if let Err(err) = self.refill_buffer() {
+                Some(Err(err.into()))
+            } else {
+                self.next_char().map(Ok)
+            }
         }
     }
 }
@@ -50,11 +179,17 @@ pub trait SpanLocator: Locator {
 }
 
 /// A location within a stream of text.
-#[derive(Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy, Default)]
 pub struct Location {
     row: u64,
     column: u64,
     character: u64,
+}
+
+impl fmt::Display for Location {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "{}:{}", self.row, self.column)
+    }
 }
 
 impl Location {
@@ -83,7 +218,11 @@ impl Locator for Location {
         };
         let character = self.character + 1;
 
-        Location { row, column, character }
+        Location {
+            row,
+            column,
+            character,
+        }
     }
 
     type Span = Span;
@@ -99,10 +238,16 @@ impl Locator for Location {
 /// A span between two locations within a stream of text.
 ///
 /// Inclusive of the start and non-inclusive of the end.
-#[derive(Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy, Default)]
 pub struct Span {
     start: Location,
     end: Location,
+}
+
+impl fmt::Display for Span {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "{}..{}", self.start, self.end)
+    }
 }
 
 impl Span {
@@ -151,49 +296,88 @@ impl SpanLocator for Span {
 }
 
 /// A location within a particular source file.
-#[derive(Clone)]
-struct SourceLocation {
-    source: Source,
+#[derive(Debug, Copy)]
+pub struct SourceLocation<'s, S> {
+    source: &'s S,
     location: Location,
 }
 
-impl Locator for SourceLocation {
+impl<'s, S: Source> fmt::Display for SourceLocation<'s, S> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "{}[{}]", self.source.name(), self.location)
+    }
+}
+
+impl<'s, S: Source> SourceLocation<'s, S> {
+    pub fn source_start(source: &'s S) -> Self {
+        SourceLocation {
+            source,
+            location: Default::default(),
+        }
+    }
+}
+
+impl<'s, S> Clone for SourceLocation<'s, S> {
+    fn clone(&self) -> Self {
+        SourceLocation {
+            source: self.source,
+            location: self.location.clone(),
+        }
+    }
+}
+
+impl<'s, S> Locator for SourceLocation<'s, S> {
     fn location(&self) -> &Location {
         &self.location
     }
 
     fn location_after(&self, next: char) -> Self {
         SourceLocation {
-            source: self.source.clone(),
+            source: self.source,
             location: self.location.location_after(next),
         }
     }
 
-    type Span = SourceSpan;
+    type Span = SourceSpan<'s, S>;
 
     fn span_to(&self, end: &Location) -> Self::Span {
         SourceSpan {
-            source: self.source.clone(),
+            source: self.source,
             span: self.location.span_to(end),
         }
     }
 }
 
 /// A span within a particular source file.
-#[derive(Clone)]
-struct SourceSpan {
-    source: Source,
+#[derive(Debug, Copy)]
+pub struct SourceSpan<'s, S> {
+    source: &'s S,
     span: Span,
 }
 
-impl Locator for SourceSpan {
+impl<'s, S: Source> fmt::Display for SourceSpan<'s, S> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "{}[{}]", self.source.name(), self.span)
+    }
+}
+
+impl<'s, S> Clone for SourceSpan<'s, S> {
+    fn clone(&self) -> Self {
+        SourceSpan {
+            source: self.source,
+            span: self.span.clone(),
+        }
+    }
+}
+
+impl<'s, S> Locator for SourceSpan<'s, S> {
     fn location(&self) -> &Location {
         self.span.location()
     }
 
     fn location_after(&self, next: char) -> Self {
         SourceSpan {
-            source: self.source.clone(),
+            source: self.source,
             span: self.span.location_after(next),
         }
     }
@@ -202,20 +386,20 @@ impl Locator for SourceSpan {
 
     fn span_to(&self, end: &Location) -> Self::Span {
         SourceSpan {
-            source: self.source.clone(),
+            source: self.source,
             span: self.span.span_to(end),
         }
     }
 }
 
-impl SpanLocator for SourceSpan {
+impl<'s, S> SpanLocator for SourceSpan<'s, S> {
     fn span(&self) -> &Span {
         &self.span
     }
 
     fn extended_span(&self, next: char) -> Self {
         SourceSpan {
-            source: self.source.clone(),
+            source: self.source,
             span: self.span.extended_span(next),
         }
     }
