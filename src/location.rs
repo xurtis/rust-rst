@@ -20,7 +20,7 @@ pub trait Source {
     fn name(&self) -> Cow<str>;
 
     /// Get an excerpt from the source.
-    fn excerpt(&self, span: Span) -> Cow<str>;
+    fn excerpt(&self, span: Span) -> Option<Cow<str>>;
 
     /// Get an iterator over the characters in the source.
     fn chars(&mut self) -> Option<Self::Chars>;
@@ -48,8 +48,15 @@ impl<'t> Source for TextSource<'t> {
         Cow::Borrowed(&self.name)
     }
 
-    fn excerpt(&self, span: Span) -> Cow<str> {
-        unimplemented!()
+    fn excerpt(&self, span: Span) -> Option<Cow<str>> {
+        let start = span.start.character();
+        let end = span.end.character();
+
+        if end <= self.buffer.len() {
+            Some(Cow::Borrowed(&self.buffer[start..end]))
+        } else {
+            None
+        }
     }
 
     fn chars(&mut self) -> Option<Self::Chars> {
@@ -89,8 +96,9 @@ impl<R: Read> Source for ReaderSource<R> {
         Cow::Borrowed(&self.name)
     }
 
-    fn excerpt(&self, span: Span) -> Cow<str> {
-        unimplemented!()
+    fn excerpt(&self, span: Span) -> Option<Cow<str>> {
+        // Cannot get excerpt from consumed reader.
+        None
     }
 
     fn chars(&mut self) -> Option<Self::Chars> {
@@ -181,9 +189,9 @@ pub trait SpanLocator: Locator {
 /// A location within a stream of text.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Location {
-    row: u64,
-    column: u64,
-    character: u64,
+    row: usize,
+    column: usize,
+    character: usize,
 }
 
 impl fmt::Display for Location {
@@ -193,15 +201,15 @@ impl fmt::Display for Location {
 }
 
 impl Location {
-    pub fn row(&self) -> u64 {
+    pub fn row(&self) -> usize {
         self.row
     }
 
-    pub fn column(&self) -> u64 {
+    pub fn column(&self) -> usize {
         self.column
     }
 
-    pub fn character(&self) -> u64 {
+    pub fn character(&self) -> usize {
         self.character
     }
 }
@@ -257,6 +265,10 @@ impl Span {
 
     pub fn end(&self) -> &Location {
         &self.end
+    }
+
+    pub fn len(&self) -> usize {
+        self.end.character - self.start.character
     }
 }
 
@@ -353,6 +365,12 @@ impl<'s, S> Locator for SourceLocation<'s, S> {
 pub struct SourceSpan<'s, S> {
     source: &'s S,
     span: Span,
+}
+
+impl<'s, S: Source> SourceSpan<'s, S> {
+    pub fn excerpt(&self) -> Option<Cow<str>> {
+        self.source.excerpt(self.span)
+    }
 }
 
 impl<'s, S: Source> fmt::Display for SourceSpan<'s, S> {
