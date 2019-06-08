@@ -4,7 +4,7 @@
 
 use std::io::{BufReader, Read, BufRead};
 
-use crate::error::*;
+use failure::Error;
 
 pub struct TokenStream<R> {
     buffer: Option<Token>,
@@ -21,7 +21,7 @@ impl<R: Read> TokenStream<R> {
 }
 
 impl<R: Read> Iterator for TokenStream<R> {
-    type Item = Result<Token>;
+    type Item = Result<Token, Error>;
 
     fn next(&mut self) -> Option<Self::Item> {
         loop {
@@ -91,7 +91,7 @@ impl<R: Read> Chars<R> {
         }
     }
 
-    fn refill_buffer(&mut self) -> Result<()> {
+    fn refill_buffer(&mut self) -> Result<(), Error> {
         let mut line = String::new();
         match self.source.read_line(&mut line) {
             Ok(_) => {
@@ -105,7 +105,7 @@ impl<R: Read> Chars<R> {
 }
 
 impl<R: Read> Iterator for Chars<R> {
-    type Item = Result<char>;
+    type Item = Result<char, Error>;
 
     fn next(&mut self) -> Option<Self::Item> {
         if let Some(c) = self.next_char() {

@@ -6,7 +6,6 @@
 
 extern crate url;
 
-pub mod error;
 pub mod ast;
 mod tokens;
 pub mod location;

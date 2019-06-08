@@ -7,4 +7,4 @@ edition = "2018"
 [dependencies]
 url = "1.7.2"
 fast_chemail = "0.9.5"
-error-chain = "0.12.0"
+failure = "0.1.5"
