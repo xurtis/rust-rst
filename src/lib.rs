@@ -7,8 +7,8 @@
 extern crate url;
 
 pub mod ast;
-mod tokens;
 pub mod location;
+mod tokens;
 
 pub use self::tokens::{Token, TokenStream};
 
