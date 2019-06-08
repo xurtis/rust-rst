@@ -5,6 +5,7 @@
 use std::borrow::Cow;
 use std::fmt;
 use std::io::{BufRead, BufReader, Read};
+use std::ops::Deref;
 use std::str;
 
 use failure::Error;
@@ -338,6 +339,20 @@ impl<'s, S> Clone for SourceLocation<'s, S> {
     }
 }
 
+impl<'s, S> Deref for SourceLocation<'s, S> {
+    type Target = Location;
+
+    fn deref(&self) -> &Location {
+        &self.location
+    }
+}
+
+impl<'s, S> AsRef<Location> for SourceLocation<'s, S> {
+    fn as_ref(&self) -> &Location {
+        &self.location
+    }
+}
+
 impl<'s, S> Locator for SourceLocation<'s, S> {
     fn location(&self) -> &Location {
         &self.location
@@ -385,6 +400,20 @@ impl<'s, S> Clone for SourceSpan<'s, S> {
             source: self.source,
             span: self.span.clone(),
         }
+    }
+}
+
+impl<'s, S> Deref for SourceSpan<'s, S> {
+    type Target = Span;
+
+    fn deref(&self) -> &Span {
+        &self.span
+    }
+}
+
+impl<'s, S> AsRef<Span> for SourceSpan<'s, S> {
+    fn as_ref(&self) -> &Span {
+        &self.span
     }
 }
 
